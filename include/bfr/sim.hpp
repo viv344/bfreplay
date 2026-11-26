@@ -37,7 +37,7 @@ struct ReplayStats {
 };
 
 // Returns false if the file is not a GB/IE WIN market (or unreadable / never went in-play).
-bool replay_file(const std::string& path, Strategy& strategy, MarketResult& out, ReplayStats& stats);
+bool replay_file(const std::string& path, Strategy& strategy, MarketResult& out, ReplayStats& stats, int window_min = 0);
 
 // Net-market commission settlement (Betfair charges commission on each market's net winnings).
 double settle_market(const std::vector<Bet>& bets, double commission);

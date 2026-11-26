@@ -7,7 +7,7 @@
 //
 //   bflive --config ~/.config/bflive/config.ini [strategy options] [--live]
 //          [--max-liability 50] [--max-orders-per-day 60] [--max-daily-liability 1500]
-//          [--record-dir DIR] [--log FILE]
+//          [--record-dir DIR] [--log FILE] [--window-min 30] [--warmup-min 60]
 //
 // config.ini keys: username, app_key, cert, key, [password] (or env BF_PASSWORD).
 #include <sys/stat.h>
@@ -61,11 +61,13 @@ struct Args {
     int max_orders_per_day = 60;
     double max_daily_liability = 1500.0;
     std::string record_dir = "live_data";
+    int warmup_min = 60;   // after start or a data gap > 5 min: rebuild this much history before acting
     std::string log = "bflive_log.csv";
 };
 
 Args parse_args(int argc, char** argv) {
     Args a;
+    a.strat.window_min = 30;   // live default: only act in the last 30 min before the scheduled start
     for (int i = 1; i < argc; ++i) {
         std::string k = argv[i];
         auto val = [&]() -> std::string {
@@ -79,6 +81,7 @@ Args parse_args(int argc, char** argv) {
         else if (k == "--max-orders-per-day") a.max_orders_per_day = std::stoi(val());
         else if (k == "--max-daily-liability") a.max_daily_liability = std::stod(val());
         else if (k == "--record-dir") a.record_dir = val();
+        else if (k == "--warmup-min") a.warmup_min = std::stoi(val());
         else if (k == "--log") a.log = val();
         else { std::fprintf(stderr, "unknown option %s\n", k.c_str()); std::exit(2); }
     }
@@ -278,6 +281,13 @@ int main(int argc, char** argv) {
     size_t msgs = 0, settled = 0;
     auto last_keepalive = std::chrono::steady_clock::now(), last_status = last_keepalive;
     int backoff_s = 1;
+    // Warm-up: strategies need history. Do not act until we have seen `warmup_min` of
+    // continuous data, after start-up and after any gap longer than 5 minutes.
+    // Wall clock on purpose: steady_clock stops while the machine is suspended, which would hide gaps.
+    using wall = std::chrono::system_clock;
+    auto warm_until = wall::now() + std::chrono::minutes(a.warmup_min);
+    auto last_msg = wall::now();
+    std::printf("warming up: no orders before %d min of continuous data\n", a.warmup_min);
 
     while (!g_stop) {
         if (!stream.connect(rest.app_key(), rest.session(), err)) {
@@ -292,6 +302,21 @@ int main(int argc, char** argv) {
 
         while (!g_stop && stream.read_line(line, err)) {
             ++msgs;
+            {
+                auto now = wall::now();
+                if (now - last_msg > std::chrono::minutes(5)) {          // data gap: cancel and re-warm
+                    std::printf("%s data gap of %lds: cancelling resting orders, warming up again\n", now_utc().c_str(),
+                                static_cast<long>(std::chrono::duration_cast<std::chrono::seconds>(now - last_msg).count()));
+                    warm_until = now + std::chrono::minutes(a.warmup_min);
+                    for (auto& [id, m] : markets) {
+                        if (!m.engine || m.engine->is_off()) continue;
+                        actions.clear();
+                        m.engine->cancel_all(actions);
+                        for (auto& act : actions) exec.submit(act, m.venue);
+                    }
+                }
+                last_msg = now;
+            }
             if (auto day = now_utc("%Y%m%d"); day != record_day) {        // daily rotation
                 record_day = day;
                 record.close();
@@ -319,7 +344,7 @@ int main(int argc, char** argv) {
                 auto& m = markets[id];
                 if (!m.engine) {
                     m.strategy = a.strat.make();
-                    m.engine = std::make_unique<MarketEngine>(id, *m.strategy);
+                    m.engine = std::make_unique<MarketEngine>(id, *m.strategy, a.strat.window_min);
                 }
                 auto md = mc["marketDefinition"];
                 if (md && !md.is_null() && m.venue.empty()) m.venue = std::string(md["venue"].str());
@@ -353,7 +378,9 @@ int main(int argc, char** argv) {
                 touched.push_back(id);
             }
             if (fs::exists(stop_file)) exec.halt_and_cancel_all();
+            const bool warm = wall::now() >= warm_until;
             for (auto& id : touched) {
+                if (!warm) break;
                 auto it = markets.find(id);
                 if (it == markets.end() || !it->second.engine) continue;
                 actions.clear();
@@ -366,9 +393,9 @@ int main(int argc, char** argv) {
                 last_status = now;
                 size_t resting = 0;
                 for (auto& [id, m] : markets) if (m.engine && !m.engine->is_off()) resting += m.engine->resting().size();
-                std::printf("%s msgs %zu | markets %zu | resting %zu | settled %zu | paper P&L £%.2f @2%%, £%.2f @6%%%s\n",
+                std::printf("%s msgs %zu | markets %zu | resting %zu | settled %zu | paper P&L £%.2f @2%%, £%.2f @6%%%s%s\n",
                             now_utc().c_str(), msgs, markets.size(), resting, settled, paper_pnl_2, paper_pnl_6,
-                            exec.halted() ? " | HALTED" : "");
+                            wall::now() < warm_until ? " | warming up" : "", exec.halted() ? " | HALTED" : "");
                 std::fflush(stdout);
             }
             if (now - last_keepalive > std::chrono::minutes(30)) {

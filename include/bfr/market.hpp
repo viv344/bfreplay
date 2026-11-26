@@ -38,6 +38,7 @@ struct MarketView {
     bool has_definition = false;
     std::string status;                // OPEN / SUSPENDED / CLOSED
     bool in_play = false;
+    int64_t market_time_ms = 0;        // scheduled start (epoch ms), from marketDefinition.marketTime
     std::vector<Runner> runners;       // order = market definition order
 
     Runner* find(int64_t id) {

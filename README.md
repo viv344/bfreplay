@@ -92,6 +92,12 @@ is exactly the logic that trades.
 - **Dry run by default:** intended orders are logged and settled on paper at BSP when each
   market closes. `--live` places real `MARKET_ON_CLOSE` lay orders through a REST worker
   thread, so the stream reader never blocks on HTTP.
+- Acts only inside a trade window before the scheduled start (`--window-min`, default 30).
+  The window changes no backtest result, because only orders standing at the off are matched.
+- Warm-up: no orders until `--warmup-min` (default 60) of continuous data has been seen,
+  after start-up and after any data gap longer than 5 minutes (resting orders are cancelled
+  on a gap). Gaps are measured on the wall clock, so machine suspends are caught.
+- `run_bflive.sh` keeps the machine from sleeping while the bot runs (`systemd-inhibit`).
 - Hard limits: maximum liability per order, orders per day and liability per day. A kill
   switch (`touch <config dir>/STOP`) cancels all open orders and halts. Orders are also
   cancelled on shutdown.

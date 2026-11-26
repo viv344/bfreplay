@@ -15,7 +15,7 @@ bool is_target_market(std::string_view first_line) {
 
 }  // namespace
 
-bool replay_file(const std::string& path, Strategy& strategy, MarketResult& out, ReplayStats& stats) {
+bool replay_file(const std::string& path, Strategy& strategy, MarketResult& out, ReplayStats& stats, int window_min) {
     thread_local MarketFile file;
     thread_local json::Document doc;
     ++stats.files_read;
@@ -26,7 +26,7 @@ bool replay_file(const std::string& path, Strategy& strategy, MarketResult& out,
     out = MarketResult{};
     out.market_id = std::filesystem::path(path).stem().string();
     out.bytes = file.bytes();
-    MarketEngine engine(out.market_id, strategy);
+    MarketEngine engine(out.market_id, strategy, window_min);
     std::vector<OrderAction> actions;
 
     for (auto line : lines) {

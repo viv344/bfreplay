@@ -17,6 +17,7 @@ struct StrategyOptions {
     std::string name = "lay-favourite";
     LayFavouriteParams fav;
     bool calibrate = false;
+    int window_min = 0;   // trade window before the scheduled start (0 = unrestricted)
 
     // Consume a strategy option. Returns false if `k` is not a strategy option.
     bool parse(const std::string& k, const std::function<std::string()>& val) {
@@ -24,6 +25,7 @@ struct StrategyOptions {
         else if (k == "--lo") fav.band_lo = std::stod(val());
         else if (k == "--hi") fav.band_hi = std::stod(val());
         else if (k == "--liability") fav.liability = std::stod(val());
+        else if (k == "--window-min") window_min = std::stoi(val());
 #ifdef BFR_HAS_PRIVATE
         else if (priv::parse_option(k, val)) calibrate = priv::calibrate();
 #endif

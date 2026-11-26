@@ -88,7 +88,7 @@ int main(int argc, char** argv) {
             MarketResult r;
             for (size_t i; (i = next.fetch_add(1)) < files.size();) {
                 auto strat = a.strat.make();
-                if (replay_file(files[i], *strat, r, st)) { r.path = files[i]; local.push_back(std::move(r)); }
+                if (replay_file(files[i], *strat, r, st, a.strat.window_min)) { r.path = files[i]; local.push_back(std::move(r)); }
             }
             std::lock_guard lk(mu);
             for (auto& m : local) results.push_back(std::move(m));
