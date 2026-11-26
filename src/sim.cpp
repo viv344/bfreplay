@@ -1,7 +1,7 @@
 #include "bfr/sim.hpp"
 #include <filesystem>
-#include <map>
 #include "bfr/market_file.hpp"
+#include "bfr/engine.hpp"
 #include "bfr/json.hpp"
 
 namespace bfr {
@@ -11,16 +11,6 @@ bool is_target_market(std::string_view first_line) {
     if (first_line.find("\"marketType\":\"WIN\"") == std::string_view::npos) return false;
     return first_line.find("\"countryCode\":\"GB\"") != std::string_view::npos ||
            first_line.find("\"countryCode\":\"IE\"") != std::string_view::npos;
-}
-
-void apply_definition(MarketView& mv, json::Value md) {
-    mv.has_definition = true;
-    mv.status = std::string(md["status"].str());
-    mv.in_play = md["inPlay"].boolean();
-    for (auto r : md["runners"]) {
-        auto id = static_cast<int64_t>(r["id"].number(0));
-        mv.get_or_add(id).status = std::string(r["status"].str());
-    }
 }
 
 }  // namespace
@@ -36,44 +26,25 @@ bool replay_file(const std::string& path, Strategy& strategy, MarketResult& out,
     out = MarketResult{};
     out.market_id = std::filesystem::path(path).stem().string();
     out.bytes = file.bytes();
-    MarketView mv;
-    mv.market_id = out.market_id;
-    std::map<int64_t, Order> resting;
-    int64_t off = -1;
+    MarketEngine engine(out.market_id, strategy);
+    std::vector<OrderAction> actions;
 
     for (auto line : lines) {
         if (!doc.parse(line)) { ++stats.bad_lines; continue; }
         ++out.messages;
         auto msg = doc.root();
         const auto pt = static_cast<int64_t>(msg["pt"].number(0));
-        for (auto mc : msg["mc"]) {
-            if (auto md = mc["marketDefinition"]; md && !md.is_null()) {
-                apply_definition(mv, md);
-                if (mv.in_play) { off = pt; break; }
-            }
-            for (auto rc : mc["rc"]) {
-                auto ltp = rc["ltp"];
-                if (!ltp || ltp.is_null()) continue;
-                auto id = static_cast<int64_t>(rc["id"].number(0));
-                mv.get_or_add(id).history.push_back({pt, ltp.number()});
-            }
-        }
-        if (off >= 0) break;
-        if (!mv.has_definition || mv.status != "OPEN") continue;
-        const auto& wanted = strategy.on_update(mv, pt);
-        for (auto it = resting.begin(); it != resting.end();) {          // cancels
-            if (!wanted.count(it->first)) { it = resting.erase(it); ++out.actions; }
-            else ++it;
-        }
-        for (const auto& [sel, o] : wanted) {                              // places / refreshes
-            auto [it, inserted] = resting.try_emplace(sel, o);
-            if (inserted) ++out.actions;
-            else it->second = o;   // same order (strategy keeps original placed_pt); refresh signal
-        }
+        for (auto mc : msg["mc"])
+            if (!engine.on_change(mc, pt)) break;
+        if (engine.is_off()) break;
+        actions.clear();
+        engine.decide(pt, actions);
+        out.actions += static_cast<int>(actions.size());
     }
     stats.messages += out.messages;
     stats.bytes += out.bytes;
-    if (off < 0) return false;
+    if (!engine.is_off()) return false;
+    const int64_t off = engine.off_pt();
     out.off = off;
 
     // Settlement from the final market definition in the file.
@@ -88,7 +59,7 @@ bool replay_file(const std::string& path, Strategy& strategy, MarketResult& out,
     out.venue = std::string(final_md["venue"].str());
     out.country = std::string(final_md["countryCode"].str());
     out.base_rate = final_md["marketBaseRate"].number(0);
-    for (const auto& [sel, o] : resting) {
+    for (const auto& [sel, o] : engine.resting()) {
         if (off - o.placed_pt < kLatencyMs) continue;
         json::Value runner;
         for (auto r : final_md["runners"])

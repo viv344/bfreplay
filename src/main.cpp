@@ -17,9 +17,7 @@
 #include <vector>
 #include <memory>
 #include "bfr/sim.hpp"
-#ifdef BFR_HAS_PRIVATE
-#include "private_hooks.hpp"   // optional, untracked
-#endif
+#include "bfr/strategy_options.hpp"
 
 namespace fs = std::filesystem;
 using namespace bfr;
@@ -28,9 +26,8 @@ namespace {
 constexpr int64_t kYear2StartMs = 1761955200000;   // 2025-11-01T00:00:00Z
 
 struct Args {
-    std::string root, out = "bets.csv", strategy = "lay-favourite";
-    LayFavouriteParams fav;
-    bool calibrate = false;
+    std::string root, out = "bets.csv";
+    StrategyOptions strat;
     unsigned threads = std::thread::hardware_concurrency();
 };
 
@@ -41,27 +38,12 @@ Args parse_args(int argc, char** argv) {
     for (int i = 2; i < argc; ++i) {
         std::string k = argv[i];
         auto val = [&]() -> std::string { if (i + 1 >= argc) std::exit(2); return argv[++i]; };
-        if (k == "--strategy") a.strategy = val();
-        else if (k == "--lo") a.fav.band_lo = std::stod(val());
-        else if (k == "--hi") a.fav.band_hi = std::stod(val());
-        else if (k == "--liability") a.fav.liability = std::stod(val());
-        else if (k == "--threads") a.threads = std::stoul(val());
+        if (a.strat.parse(k, val)) continue;
+        if (k == "--threads") a.threads = std::stoul(val());
         else if (k == "--out") a.out = val();
-#ifdef BFR_HAS_PRIVATE
-        else if (priv::parse_option(k, val)) a.calibrate = priv::calibrate();
-#endif
         else { std::fprintf(stderr, "unknown option %s\n", k.c_str()); std::exit(2); }
     }
     return a;
-}
-
-std::unique_ptr<Strategy> make_strategy(const Args& a) {
-    if (a.strategy == "lay-favourite") return std::make_unique<LayFavourite>(a.fav);
-#ifdef BFR_HAS_PRIVATE
-    if (auto s = priv::make(a.strategy)) return s;
-#endif
-    std::fprintf(stderr, "unknown strategy %s\n", a.strategy.c_str());
-    std::exit(2);
 }
 
 double quantile(std::vector<double> v, double q) {
@@ -105,7 +87,7 @@ int main(int argc, char** argv) {
             ReplayStats st;
             MarketResult r;
             for (size_t i; (i = next.fetch_add(1)) < files.size();) {
-                auto strat = make_strategy(a);
+                auto strat = a.strat.make();
                 if (replay_file(files[i], *strat, r, st)) { r.path = files[i]; local.push_back(std::move(r)); }
             }
             std::lock_guard lk(mu);
@@ -129,7 +111,7 @@ int main(int argc, char** argv) {
     std::printf("replayed %zu messages (%.1f MB decompressed): %.2fM msg/s, %.0f MB/s, %zu bad lines\n",
                 msgs, bytes / 1e6, msgs / secs / 1e6, bytes / 1e6 / secs, total.bad_lines);
 
-    if (a.calibrate) {
+    if (a.strat.calibrate) {
         std::vector<double> y1;
         for (auto& m : results) if (m.off < kYear2StartMs) for (auto& b : m.bets) y1.push_back(b.signal);
         std::printf("first-period runners in band at last decision: %zu\n", y1.size());

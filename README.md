@@ -79,6 +79,29 @@ AMD Ryzen AI 7 350 laptop (8 cores / 16 threads). All runs produce identical out
   market, selection, BSP, result, timing and price. Stakes agree to within 5e-9, which is
   CSV print precision.
 
+## Live trading: `bflive`
+
+`bflive` runs the **same `MarketEngine` and `Strategy` code** against the live Betfair
+Exchange Stream API. Historical files are recorded stream output, so the backtested logic
+is exactly the logic that trades.
+
+- Certificate (non-interactive) login, with session keep-alive and re-login.
+- TLS Stream API client (OpenSSL): authentication, market-filter subscription, heartbeat
+  timeout, and resubscription from the last `initialClk`/`clk` after a disconnect.
+- Raw stream recording (`live_data/stream-YYYYMMDD.jsonl`) for later replay and audit.
+- **Dry run by default:** intended orders are logged and settled on paper at BSP when each
+  market closes. `--live` places real `MARKET_ON_CLOSE` lay orders through a REST worker
+  thread, so the stream reader never blocks on HTTP.
+- Hard limits: maximum liability per order, orders per day and liability per day. A kill
+  switch (`touch <config dir>/STOP`) cancels all open orders and halts. Orders are also
+  cancelled on shutdown.
+
+```bash
+./build/bflive --config ~/.config/bflive/config.ini --strategy lay-favourite          # dry run
+./build/bflive --config ~/.config/bflive/config.ini --strategy lay-favourite --live \
+               --max-liability 20 --max-orders-per-day 40 --max-daily-liability 800
+```
+
 ## Build and run
 
 ```bash
@@ -92,4 +115,4 @@ ctest --test-dir build
 Options: `--lo`, `--hi`, `--liability £`, `--threads N`, `--out FILE`. The output reports
 P&L at 2% and 6% commission, split at 1 Nov 2025.
 
-Dependencies: a C++20 compiler, CMake 3.20 or later, libbz2, libzstd, GoogleTest.
+Dependencies: a C++20 compiler, CMake 3.20 or later, libbz2, libzstd, OpenSSL, libcurl, GoogleTest.
