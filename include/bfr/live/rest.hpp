@@ -34,6 +34,8 @@ public:
     std::optional<std::string> place_moc_lay(const std::string& market_id, int64_t selection_id, double liability,
                                              const std::string& customer_ref, std::string& error);
     bool cancel(const std::string& market_id, const std::string& bet_id, std::string& error);
+    // Accounts API call (e.g. "getDeveloperAppKeys"); returns the raw response.
+    HttpResult account(const std::string& op, const std::string& json_body = "{}");
 
 private:
     HttpResult post(const std::string& url, const std::string& body, const std::string& content_type,

@@ -108,6 +108,45 @@ is exactly the logic that trades.
                --max-liability 20 --max-orders-per-day 40 --max-daily-liability 800
 ```
 
+Order-book recording (no strategy, no orders): `--record-only` with `--fields` chooses the
+Stream API data fields, e.g. the full ladder, traded volume per price and projected SP:
+
+```bash
+./build/bflive --record-only --record-dir book_data --log rec_log.csv \
+  --fields '["EX_MARKET_DEF","EX_ALL_OFFERS","EX_TRADED","EX_TRADED_VOL","EX_LTP","SP_PROJECTED","SP_TRADED"]'
+```
+
+`bfkeys` lists the account's delayed and live app keys and whether each is active.
+
+## Market making: queue-aware maker simulator (`bfmm`)
+
+`include/bfr/mm/` simulates passive limit orders (quotes) against recorded order-book streams:
+
+- **Prices as tick indices** on Betfair's 350-step ladder (`ticks.hpp`), so "one tick better"
+  is exact.
+- **Order book per runner** (`book.hpp`) from `atb`/`atl`/`trd`/`spn` deltas. Full images reset the
+  book without counting their volume as new trades.
+- **Fill model** (`sim.hpp`):
+  - New orders join the back of the displayed queue.
+  - Matched volume at our price consumes the queue ahead first.
+  - Cancellations shrink the queue ahead pro-rata, or only after the queue behind us is gone
+    (`--cancel behind`, pessimistic).
+  - A trade at a worse price, or the opposite side crossing our price, fills us completely.
+  - Latency applies before an order can fill.
+  - Post-only: quotes never cross the book or our own orders.
+  - Orders lapse at the off.
+- **Settlement:** P&L on the result, P&L with exposure closed at BSP (low variance), and the
+  edge of every fill against BSP. Commission is charged on net market winnings.
+- **Example strategy** (`join_touch.hpp`): joins or improves the touch in wide spreads when the
+  price is no worse than projected SP, and skews away from accumulated exposure.
+
+```bash
+./build/bfmm --cancel behind --traded-scale 0.5 --markets markets.csv book_data/*.jsonl
+```
+
+Recordings made with a delayed app key are conflated (one update per ~3 minutes), which is
+fine for spread and depth studies but too coarse for fill modelling. Use live-key recordings for that.
+
 ## Build and run
 
 ```bash

@@ -38,12 +38,18 @@ endif()
 add_executable(bfconvert tools/bfconvert.cpp)
 target_link_libraries(bfconvert PRIVATE bfr Threads::Threads)
 
+add_executable(bfkeys tools/bfkeys.cpp src/live/rest.cpp)
+target_link_libraries(bfkeys PRIVATE bfr OpenSSL::SSL OpenSSL::Crypto CURL::libcurl)
+
+add_executable(bfmm tools/bfmm.cpp)
+target_link_libraries(bfmm PRIVATE bfr)
+
 add_executable(bench_json bench/bench_json.cpp)
 target_link_libraries(bench_json PRIVATE bfr)
 
 enable_testing()
 find_package(GTest REQUIRED)
-add_executable(tests tests/test_json.cpp tests/test_strategy.cpp tests/test_sim.cpp)
+add_executable(tests tests/test_json.cpp tests/test_strategy.cpp tests/test_sim.cpp tests/test_mm.cpp)
 target_link_libraries(tests PRIVATE bfr GTest::gtest_main)
 if(EXISTS ${CMAKE_SOURCE_DIR}/private/tests_private.cpp)
   target_sources(tests PRIVATE private/tests_private.cpp)

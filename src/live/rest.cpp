@@ -102,6 +102,10 @@ bool Rest::keep_alive(std::string& error) {
     return true;
 }
 
+HttpResult Rest::account(const std::string& op, const std::string& json_body) {
+    return post("https://api.betfair.com/exchange/account/rest/v1.0/" + op + "/", json_body, "application/json", false, true);
+}
+
 HttpResult Rest::betting(const std::string& op, const std::string& json_body) {
     return post(std::string(kBettingUrl) + op + "/", json_body, "application/json", false, true);
 }

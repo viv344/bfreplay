@@ -8,6 +8,10 @@
 //   bflive --config ~/.config/bflive/config.ini [strategy options] [--live]
 //          [--max-liability 50] [--max-orders-per-day 60] [--max-daily-liability 1500]
 //          [--record-dir DIR] [--log FILE] [--window-min 30] [--warmup-min 60]
+//          [--fields '["EX_MARKET_DEF","EX_LTP"]'] [--record-only]
+//
+// --record-only: only record the stream (no strategy, no orders). With --fields it can capture
+// the order book, e.g. '["EX_MARKET_DEF","EX_ALL_OFFERS","EX_TRADED","EX_TRADED_VOL","EX_LTP","SP_PROJECTED","SP_TRADED"]'.
 //
 // config.ini keys: username, app_key, cert, key, [password] (or env BF_PASSWORD).
 #include <sys/stat.h>
@@ -63,6 +67,8 @@ struct Args {
     std::string record_dir = "live_data";
     int warmup_min = 60;   // after start or a data gap > 5 min: rebuild this much history before acting
     std::string log = "bflive_log.csv";
+    std::string fields;        // empty: StreamConfig default
+    bool record_only = false;
 };
 
 Args parse_args(int argc, char** argv) {
@@ -83,6 +89,8 @@ Args parse_args(int argc, char** argv) {
         else if (k == "--record-dir") a.record_dir = val();
         else if (k == "--warmup-min") a.warmup_min = std::stoi(val());
         else if (k == "--log") a.log = val();
+        else if (k == "--fields") a.fields = val();
+        else if (k == "--record-only") a.record_only = true;
         else { std::fprintf(stderr, "unknown option %s\n", k.c_str()); std::exit(2); }
     }
     return a;
@@ -262,6 +270,8 @@ int main(int argc, char** argv) {
 
     std::printf("bflive %s | strategy %s | log %s | recording to %s/\n", a.live ? "LIVE (real orders)" : "DRY RUN",
                 a.strat.name.c_str(), a.log.c_str(), a.record_dir.c_str());
+    if (a.record_only && a.live) { std::fprintf(stderr, "--record-only and --live are exclusive\n"); return 2; }
+    if (a.record_only) std::printf("RECORD ONLY: no strategy, no orders\n");
     if (a.live) std::printf("limits: £%.0f per order, %d orders/day, £%.0f liability/day; kill switch: touch %s\n",
                             a.max_liability, a.max_orders_per_day, a.max_daily_liability, stop_file.c_str());
 
@@ -271,7 +281,9 @@ int main(int argc, char** argv) {
     std::printf("logged in\n");
 
     Executor exec(a, rest, log);
-    StreamClient stream(StreamConfig{});
+    StreamConfig scfg;
+    if (!a.fields.empty()) scfg.data_fields = a.fields;
+    StreamClient stream(scfg);
     std::map<std::string, LiveMarket> markets;
     json::Document doc;
     std::vector<OrderAction> actions;
@@ -339,7 +351,7 @@ int main(int argc, char** argv) {
             const auto pt = static_cast<int64_t>(msg["pt"].number(0));
 
             std::vector<std::string> touched;
-            for (auto mc : msg["mc"]) {
+            if (!a.record_only) for (auto mc : msg["mc"]) {
                 std::string id(mc["id"].str());
                 auto& m = markets[id];
                 if (!m.engine) {
