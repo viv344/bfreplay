@@ -127,12 +127,17 @@ Stream API data fields, e.g. the full ladder, traded volume per price and projec
 - **Order book per runner** (`book.hpp`) from `atb`/`atl`/`trd`/`spn` deltas. Full images reset the
   book without counting their volume as new trades.
 - **Fill model** (`sim.hpp`):
-  - New orders join the back of the displayed queue.
-  - Matched volume at our price consumes the queue ahead first.
+  - New orders join the back of the displayed queue as it stands when they arrive (after latency).
+  - Matched volume at our price consumes the queue ahead first. Betfair reports traded volume as
+    backer's stake x 2, so `--traded-scale` defaults to 0.5.
   - Cancellations shrink the queue ahead pro-rata, or only after the queue behind us is gone
-    (`--cancel behind`, pessimistic).
+    (`--cancel behind`, pessimistic), or by a power-law share (`--cancel power`).
   - A trade at a worse price, or the opposite side crossing our price, fills us completely.
-  - Latency applies before an order can fill.
+  - Latency applies before an order can fill, and cancelled orders stay fillable until the cancel
+    lands (`--cancel-latency-ms`).
+  - No fills while the market is suspended. A non-runner with a reduction factor of 2.5% or more
+    cancels unmatched orders and reduces matched prices; bets on the removed runner are void.
+  - Minimum stake and instructions per clock hour (transaction charges) are tracked.
   - Post-only: quotes never cross the book or our own orders.
   - Orders lapse at the off.
 - **Settlement:** P&L on the result, P&L with exposure closed at BSP (low variance), and the
@@ -141,7 +146,7 @@ Stream API data fields, e.g. the full ladder, traded volume per price and projec
   price is no worse than projected SP, and skews away from accumulated exposure.
 
 ```bash
-./build/bfmm --cancel behind --traded-scale 0.5 --markets markets.csv book_data/*.jsonl
+./build/bfmm --cancel behind --cancel-latency-ms 300 --markets markets.csv book_data/*.jsonl
 ```
 
 Recordings made with a delayed app key are conflated (one update per ~3 minutes), which is

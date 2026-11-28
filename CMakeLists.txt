@@ -49,7 +49,7 @@ target_link_libraries(bench_json PRIVATE bfr)
 
 enable_testing()
 find_package(GTest REQUIRED)
-add_executable(tests tests/test_json.cpp tests/test_strategy.cpp tests/test_sim.cpp tests/test_mm.cpp)
+add_executable(tests tests/test_json.cpp tests/test_strategy.cpp tests/test_sim.cpp tests/test_mm.cpp tests/test_mm_realism.cpp)
 target_link_libraries(tests PRIVATE bfr GTest::gtest_main)
 if(EXISTS ${CMAKE_SOURCE_DIR}/private/tests_private.cpp)
   target_sources(tests PRIVATE private/tests_private.cpp)

@@ -54,7 +54,9 @@ struct Harness {
 TEST(MakerSim, QueueThenFill) {
     Fixed st;
     st.q[1] = Quote{tick_of(5.0), 10, -1, 0};
-    MakerSim sim("1.1", st, SimParams{});
+    SimParams p;
+    p.traded_scale = 1.0;
+    MakerSim sim("1.1", st, p);
     Harness h;
     h.feed(sim, md("OPEN", false) + ",\"img\":true,\"rc\":[{\"id\":1,\"atb\":[[4.9,50]],\"atl\":[[5.0,30]],\"trd\":[[5.0,100]]}]", T0 - 600'000);
     ASSERT_EQ(sim.resting().size(), 1u);
@@ -120,15 +122,17 @@ TEST(MakerSim, LatencyAndPostOnly) {
     st.q[1] = Quote{tick_of(5.0), 10, tick_of(5.0), 10};   // lay at 5.0 would cross best lay 5.0: rejected
     SimParams p;
     p.latency_ms = 5'000;
+    p.traded_scale = 1.0;
     MakerSim sim("1.1", st, p);
     Harness h;
     h.feed(sim, md("OPEN", false) + ",\"img\":true,\"rc\":[{\"id\":1,\"atb\":[[4.9,50]],\"atl\":[[5.0,5]],\"trd\":[[5.0,1]]}]", T0 - 600'000);
     ASSERT_EQ(sim.resting().size(), 1u);
     EXPECT_TRUE(sim.resting()[0].back);
-    // Within the latency window 20 trades: clears the 5 ahead but cannot fill us.
+    // Within the latency window 20 trade and the queue empties: our order is still in flight, no fill.
     h.feed(sim, "\"rc\":[{\"id\":1,\"atl\":[[5.0,0]],\"trd\":[[5.0,21]]}]", T0 - 598'000);
     EXPECT_TRUE(sim.fills().empty());
-    EXPECT_DOUBLE_EQ(sim.resting()[0].queue_ahead, 0);
+    EXPECT_FALSE(sim.resting()[0].arrived);
+    // On arrival the queue is what was shown then (nothing), so the next 4 traded fill us.
     h.feed(sim, "\"rc\":[{\"id\":1,\"trd\":[[5.0,25]]}]", T0 - 590'000);
     ASSERT_EQ(sim.fills().size(), 1u);
     EXPECT_DOUBLE_EQ(sim.fills()[0].size, 4);
@@ -137,7 +141,9 @@ TEST(MakerSim, LatencyAndPostOnly) {
 TEST(MakerSim, LapsesAtOffAndSettles) {
     Fixed st;
     st.q[1] = Quote{tick_of(5.0), 10, -1, 0};
-    MakerSim sim("1.1", st, SimParams{});
+    SimParams p;
+    p.traded_scale = 1.0;
+    MakerSim sim("1.1", st, p);
     Harness h;
     h.feed(sim, md("OPEN", false) + ",\"img\":true,\"rc\":[{\"id\":1,\"atb\":[[4.9,50]],\"atl\":[[5.0,0.1]],\"trd\":[[5.0,1]]}]", T0 - 600'000);
     h.feed(sim, "\"rc\":[{\"id\":1,\"trd\":[[5.0,5.1]]}]", T0 - 590'000);   // 4 matched for us

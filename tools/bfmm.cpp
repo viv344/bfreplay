@@ -3,7 +3,8 @@
 //   bfmm [options] FILE...
 //     FILE: .jsonl recordings from `bflive --record-only` (many markets per file, read in order),
 //           or Betfair historic .bz2 / .zst market files (one market each).
-//   --latency-ms 150  --traded-scale 1.0  --cancel prorata|behind  --commission 0.02
+//   --latency-ms 150  --cancel-latency-ms 150  --traded-scale 0.5  --cancel prorata|behind|power
+//   --power-n 2  --commission 0.02  --min-stake 1
 //   --size 2  --min-spread 2  --improve-from 3  --min-edge 0  --lo 2 --hi 20  --start-min 30 --stop-sec 15
 //   --markets CSV_OUT   per-market results
 //
@@ -35,7 +36,13 @@ int main(int argc, char** argv) {
         };
         if (k == "--latency-ms") sp.latency_ms = std::stoll(val());
         else if (k == "--traded-scale") sp.traded_scale = std::stod(val());
-        else if (k == "--cancel") sp.cancel = val() == "behind" ? CancelModel::Behind : CancelModel::ProRata;
+        else if (k == "--cancel-latency-ms") sp.cancel_latency_ms = std::stoll(val());
+        else if (k == "--cancel") {
+            auto v = val();
+            sp.cancel = v == "behind" ? CancelModel::Behind : v == "power" ? CancelModel::Power : CancelModel::ProRata;
+        }
+        else if (k == "--power-n") sp.power_n = std::stod(val());
+        else if (k == "--min-stake") sp.min_stake = std::stod(val());
         else if (k == "--commission") sp.commission = std::stod(val());
         else if (k == "--size") jp.size = std::stod(val());
         else if (k == "--min-spread") jp.min_spread = std::stoi(val());
@@ -90,7 +97,7 @@ int main(int argc, char** argv) {
     size_t open_markets = 0;
     for (auto& [id, s] : sims) if (!s.sim->done()) ++open_markets;
     double matched = 0, edge = 0, res = 0, hedged = 0;
-    int orders = 0, fills = 0, unsettled = 0;
+    int orders = 0, fills = 0, unsettled = 0, cancels = 0, max_tx = 0, rejected = 0;
     std::ofstream csv;
     if (!markets_csv.empty()) {
         csv.open(markets_csv);
@@ -99,6 +106,7 @@ int main(int argc, char** argv) {
     for (const auto& r : done) {
         orders += r.orders; fills += r.fills; matched += r.matched; edge += r.edge_vs_bsp;
         res += r.pnl_result; hedged += r.pnl_hedged; unsettled += !r.settled;
+        cancels += r.cancels; rejected += r.rejected_min_stake; max_tx = std::max(max_tx, r.max_tx_hour);
         if (csv) csv << r.market_id << ",\"" << r.venue << "\"," << r.orders << ',' << r.fills << ',' << r.matched << ','
                      << r.edge_vs_bsp << ',' << r.pnl_result << ',' << r.pnl_hedged << ',' << r.settled << '\n';
     }
@@ -108,5 +116,7 @@ int main(int argc, char** argv) {
                 "(commission %.0f%%)%s\n",
                 edge, matched > 0 ? 100 * edge / matched : 0.0, res, hedged, sp.commission * 100,
                 unsettled ? " | some runners lacked BSP/result" : "");
+    std::printf("cancels %d | quotes below minimum stake %d | max instructions in one clock hour (one market) %d\n",
+                cancels, rejected, max_tx);
     return 0;
 }

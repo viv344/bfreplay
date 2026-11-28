@@ -25,6 +25,7 @@ struct RunnerBook {
     std::map<int, double> traded;      // tick -> cumulative matched
     double ltp = 0, tv = 0, spn = 0, spf = 0;
     double bsp = 0;                    // from the closing definition
+    double adjustment_factor = 0;      // reduction factor (%) from the market definition
     bool winner = false;
     bool trd_init = false;             // first trd seen: later increases are new matches
 
@@ -107,6 +108,7 @@ inline void apply_change(MarketBook& b, json::Value mc, std::vector<RunnerDelta>
             rb.status = std::string(r["status"].str());
             rb.winner = rb.status == "WINNER";
             if (auto bsp = r["bsp"]; bsp && !bsp.is_null()) rb.bsp = bsp.number(0);
+            if (auto af = r["adjustmentFactor"]; af && !af.is_null()) rb.adjustment_factor = af.number(0);
         }
     }
     for (auto rc : mc["rc"]) {
