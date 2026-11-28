@@ -17,7 +17,11 @@
 //   * Post-only is a local check only: Betfair has no post-only flag, so a quote that crosses on
 //     arrival is matched as a taker (captured by the trade-through rule at our price).
 //   * Minimum stake and the hourly transaction count are tracked.
-// Resting orders lapse at the off. At settlement the result P&L, a hedged-at-BSP P&L and the edge
+// At the off (BSP reconciliation, Betfair SP rules): an order still resting with persistence LAPSE is
+// matched at its own price only if that price is worse than BSP for us (lay P >= BSP, back P <= BSP),
+// otherwise it lapses. TAKE_SP orders become SP bets at BSP (lays keep their liability and lapse
+// below the SP minimum; backs keep their stake). Orders still in flight at the off are not included.
+// At settlement the result P&L, a hedged-at-BSP P&L and the edge
 // of every fill relative to BSP are reported. Commission is charged on net market winnings.
 #pragma once
 #include <algorithm>
@@ -35,6 +39,8 @@ struct Quote {
     double back_size = 0;
     int lay_tick = -1;    // our LAY order price (rests in the atb queue); -1 = none
     double lay_size = 0;  // backer's stake
+    bool back_take_sp = false;   // persistence: false = LAPSE, true = TAKE_SP (MARKET_ON_CLOSE)
+    bool lay_take_sp = false;
 };
 
 struct Position {
@@ -64,6 +70,9 @@ struct SimParams {
     double commission = 0.02;
     double min_stake = 1.0;            // GBP minimum backer's stake
     double min_reduction_factor = 2.5; // win market threshold for NR reductions/cancellations
+    bool reconcile_at_off = true;      // false: every resting order simply lapses at the off (old behaviour)
+    double min_sp_lay_liability = 10;  // a TAKE_SP lay remainder below this lapses
+    double min_sp_back_stake = 2;      // a TAKE_SP back remainder below this lapses
 };
 
 struct Fill {
@@ -73,14 +82,17 @@ struct Fill {
     double size;
     int64_t pt;
     double price = 0;   // matched price after any reduction factors
+    bool at_off = false;  // matched in the BSP reconciliation
 };
 
 struct MarketResult {
     std::string market_id, venue;
     int orders = 0, fills = 0;
-    int cancels = 0;             //
+    int cancels = 0;
     int max_tx_hour = 0;         // max place+cancel instructions in any clock hour (this market)
-    int rejected_min_stake = 0;  //
+    int rejected_min_stake = 0;
+    int recon_fills = 0;         // fills in the BSP reconciliation
+    double recon_matched = 0;    // backer stakes matched in the reconciliation
     double matched = 0;          // backer stakes matched
     double edge_vs_bsp = 0;      // sum of fill EV at BSP-implied probabilities (before commission)
     double pnl_result = 0;       // settled on the result, after commission
@@ -100,9 +112,19 @@ public:
         for (const auto& r : book_.runners) prev_status[r.id] = r.status;
         apply_change(book_, mc, deltas_);
         if (book_.status == "CLOSED") { settle(); return; }
-        if (book_.in_play) { orders_.clear(); return; }   // persistence LAPSE: unmatched orders cancelled at the off
-        handle_removals(prev_status, pt);                   //
-        expire_cancels(pt);                                 //
+        if (book_.in_play) {                                // the off: keep what stood in the book for reconciliation
+            if (!off_seen_) {
+                off_seen_ = true;
+                for (const auto& o : orders_)
+                    if (o.remaining > 1e-9 && pt >= o.active_pt &&                      // in flight: never arrived
+                        (o.cancel_pt < 0 || o.cancel_pt > pt))                             // cancel already landed
+                        at_off_.push_back(o);
+            }
+            orders_.clear();
+            return;
+        }
+        handle_removals(prev_status, pt);
+        expire_cancels(pt);
         if (book_.status == "OPEN") match(pt);              // nothing trades while suspended
         if (book_.status == "OPEN" && book_.has_definition) requote(pt);
     }
@@ -123,6 +145,7 @@ public:
         double prev_shown = 0;   // displayed size at our price (our side) before the current update
         bool arrived = false;    // queue re-snapshotted at arrival
         int64_t cancel_pt = -1;  // >= 0: cancel requested, effective at this time
+        bool take_sp = false;    // persistence TAKE_SP (else LAPSE)
     };
     const std::vector<Resting>& resting() const { return orders_; }
 
@@ -139,7 +162,7 @@ private:
         return nullptr;
     }
 
-    void count_tx(int64_t pt) {   //
+    void count_tx(int64_t pt) {
         int64_t hour = pt / 3'600'000;
         int n = ++tx_by_hour_[hour];
         res_.max_tx_hour = std::max(res_.max_tx_hour, n);
@@ -257,12 +280,14 @@ private:
             if (o.cancel_pt >= 0) continue;
             auto it = want.find(o.sel);
             int t = it == want.end() ? -1 : (o.back ? it->second.back_tick : it->second.lay_tick);
-            if (t != o.tick) { o.cancel_pt = pt + p_.cancel_latency_ms; res_.cancels++; count_tx(pt); }
+            if (t != o.tick) { o.cancel_pt = pt + p_.cancel_latency_ms; res_.cancels++; count_tx(pt); continue; }
+            bool want_sp = o.back ? it->second.back_take_sp : it->second.lay_take_sp;
+            if (want_sp != o.take_sp) { o.take_sp = want_sp; count_tx(pt); }   // updateOrders: keeps queue place
         }
         for (const auto& [sel, q] : want) {
             const auto* r = book_.find(sel);
             if (!r || r->status != "ACTIVE") continue;
-            auto place = [&](bool back, int tick, double size) {
+            auto place = [&](bool back, int tick, double size, bool take_sp) {
                 if (tick < 0 || size <= 0 || !valid_tick(tick)) return;
                 if (size < p_.min_stake) { res_.rejected_min_stake++; return; }   // INVALID_BET_SIZE
                 for (const auto& o : orders_)                                      // already resting (not cancelling)
@@ -271,20 +296,52 @@ private:
                 else      { int bl = r->best_lay();  if (bl >= 0 && tick >= bl) return; }
                 for (const auto& o : orders_)                                      // nor cross our own (incl. cancelling)
                     if (o.sel == sel && o.back != back && (back ? tick <= o.tick : tick >= o.tick)) return;
-                orders_.push_back({sel, back, tick, size, r->size_at(!back, tick), pt + p_.latency_ms, 0, false, -1});
+                orders_.push_back({sel, back, tick, size, r->size_at(!back, tick), pt + p_.latency_ms, 0, false, -1, take_sp});
                 res_.orders++;
                 count_tx(pt);
             };
-            place(true, q.back_tick, q.back_size);
-            place(false, q.lay_tick, q.lay_size);
+            place(true, q.back_tick, q.back_size, q.back_take_sp);
+            place(false, q.lay_tick, q.lay_size, q.lay_take_sp);
         }
     }
 
     static double net_after_commission(double net, double c) { return net > 0 ? net * (1 - c) : net; }
 
+    // BSP reconciliation of the orders that stood in the book at the off (BSP known from the closing definition).
+    void reconcile() {
+        if (!p_.reconcile_at_off) return;
+        for (const auto& o : at_off_) {
+            const auto* r = book_.find(o.sel);
+            if (!r || r->bsp <= 1.0 || r->status == "REMOVED") continue;
+            const double bsp = r->bsp, price = price_of(o.tick);
+            double stake = 0, matched_price = 0;
+            if (o.take_sp) {
+                matched_price = bsp;
+                if (o.back) stake = o.remaining >= p_.min_sp_back_stake ? o.remaining : 0;
+                else {
+                    double liability = o.remaining * (price - 1);
+                    stake = liability >= p_.min_sp_lay_liability ? liability / (bsp - 1) : 0;
+                }
+            } else if (o.back ? price <= bsp : price >= bsp) {   // LAPSE: included only when worse than SP for us
+                matched_price = price;
+                stake = o.remaining;
+            }
+            if (stake <= 1e-9) continue;
+            Fill f{o.sel, o.back, o.tick, stake, book_.market_time_ms, matched_price, true};
+            apply_fill(f);
+            fills_.push_back(f);
+            res_.fills++;
+            res_.matched += stake;
+            res_.recon_fills++;
+            res_.recon_matched += stake;
+        }
+        at_off_.clear();
+    }
+
     void settle() {
         done_ = true;
         orders_.clear();
+        reconcile();
         res_.market_id = book_.market_id;
         res_.venue = book_.venue;
         double result = 0, hedged = 0;
@@ -317,6 +374,8 @@ private:
     Positions pos_;
     MarketResult res_;
     std::map<int64_t, int> tx_by_hour_;
+    std::vector<Resting> at_off_;
+    bool off_seen_ = false;
     bool done_ = false;
 };
 

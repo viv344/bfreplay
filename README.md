@@ -138,6 +138,12 @@ Stream API data fields, e.g. the full ladder, traded volume per price and projec
   - No fills while the market is suspended. A non-runner with a reduction factor of 2.5% or more
     cancels unmatched orders and reduces matched prices; bets on the removed runner are void.
   - Minimum stake and instructions per clock hour (transaction charges) are tracked.
+- **BSP reconciliation at the off** (Betfair SP rules): an order still resting with persistence
+  LAPSE is matched at its own price only when that is worse than BSP for us (lay P >= BSP,
+  back P <= BSP), otherwise it lapses. TAKE_SP orders become SP bets at BSP (a lay keeps its
+  liability and lapses below £10; a back keeps its stake and lapses below £2). Changing
+  persistence keeps the queue place, as `updateOrders` does. Orders still in flight at the off
+  are not included. `--no-reconcile` restores plain lapsing; `--take-sp` quotes with TAKE_SP.
   - Post-only: quotes never cross the book or our own orders.
   - Orders lapse at the off.
 - **Settlement:** P&L on the result, P&L with exposure closed at BSP (low variance), and the

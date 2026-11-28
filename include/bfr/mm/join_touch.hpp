@@ -16,6 +16,7 @@ struct JoinTouchParams {
     double max_exposure = 20.0;        // stop adding to a side once |P&L if win| or |P&L if lose| exceeds this
     double min_edge = 0.0;             // require price/fair - 1 >= min_edge (back) or 1 - price/fair >= min_edge (lay)
     int start_min = 30, stop_sec = 15; // quoting window relative to the scheduled start
+    bool take_sp = false;              // quote with TAKE_SP persistence (else LAPSE)
 };
 
 class JoinTouch final : public MakerStrategy {
@@ -36,6 +37,7 @@ public:
             double fair = (r.spn > 1.0 && std::isfinite(r.spn)) ? r.spn : mid;
             bool improve = bl - bb >= p_.improve_from;
             Quote q;
+            q.back_take_sp = q.lay_take_sp = p_.take_sp;
             Position ps;
             if (auto it = pos.find(r.id); it != pos.end()) ps = it->second;
             // Our back rests where layers take it: at the best lay price (or one tick lower).
